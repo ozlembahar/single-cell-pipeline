@@ -1,0 +1,139 @@
+---
+title: "Normalization and UMAP construction"
+author: "Özlem Bahar"
+date: "7/13/2022"
+output:"UMAPs"
+  pdf_document: default
+  html_document: default
+---
+```{r}
+knitr::opts_chunk$set(fig.width=12, fig.height=8) 
+```
+
+
+```{r setup, include=FALSE, warning=FALSE}
+# install the packages
+require(Seurat)
+require(ggplot2)
+require(patchwork)
+require(sctransform)
+require(tidyverse)
+require(Matrix)
+require(scales)
+require(cowplot)
+require(RCurl)
+require(readr)
+require(dplyr)
+require(miceadds)
+require(ggplot2)
+require(tinytex)
+
+# Load .RData object
+load.Rdata(file="processed_data/filtered_seurat.RData", "filtered_seurat")
+```
+
+
+```{r, fig.width=8, fig.height=3}
+
+plot1 <- FeatureScatter(object = filtered_seurat, 
+               feature1 = "nUMI",
+               feature2 = "mitoRatio")
+plot2 <- FeatureScatter(object = filtered_seurat, 
+               feature1 = "nUMI",
+               feature2 = "nGene")
+plot1 + plot2
+```
+```{r}
+# Split seurat object by condition
+# Check for cell cycle scoring and SCT on all samples
+split_seurat <- SplitObject(filtered_seurat, split.by = "sample")
+split_seurat <- split_seurat[c("TP1","TP2.2")]
+
+```
+
+
+## Normalizing the data
+
+```{r include=FALSE}
+for (i in 1:length(split_seurat)) {
+    split_seurat[[i]] <- SCTransform(split_seurat[[i]], vars.to.regress = c("mitoRatio"))
+    }
+```
+
+```{r}
+# Save the split seurat object
+saveRDS(split_seurat, "processed_data/split_seurat_diff.rds")
+
+```
+## Data Integration
+
+Integrate the samples using SCTransform object as input.
+
+* use the 3000 most variable genes identified by SCTransform for the integration.
+
+```{r integ}
+# the most variable features for normalization
+integ_features <- SelectIntegrationFeatures(object.list = split_seurat, 
+                                            nfeatures = 3000) 
+```
+
+
+```{r}
+# Prepare the SCT list object for integration
+split_seurat <- PrepSCTIntegration(object.list = split_seurat, 
+                                   anchor.features = integ_features)
+
+```
+
+
+```{r}
+# Find the anchors
+integ_anchors <- FindIntegrationAnchors(object.list = split_seurat, 
+                                        normalization.method = "SCT", 
+                                        anchor.features = integ_features)
+```
+
+
+```{r integrate}
+# Integrate across conditions
+seurat_integrated <- IntegrateData(anchorset = integ_anchors, 
+                                   normalization.method = "SCT")
+```
+## UMAP visualization
+
+
+```{r runPCA}
+# Perform PCA on the scaled data
+seurat_integrated <- RunPCA(object = seurat_integrated, npcs = 40, verbose = FALSE)
+
+# Plot PCA
+PCAPlot(seurat_integrated,
+        split.by = "sample")  
+```
+
+```{r runUMAP}
+# Run UMAP
+seurat_integrated <- RunUMAP(seurat_integrated, 
+                             dims = 1:15,
+			                        reduction = "pca")
+
+# Plot UMAP                             
+DimPlot(seurat_integrated)                             
+```
+
+```{r UMAP.split.sample}
+# Plot UMAP split by sample
+DimPlot(seurat_integrated,
+        split.by = "sample") 
+#ggsave("labelled_plot.svg", width=7, height=10)
+```
+
+```{r}
+# Save integrated seurat object
+saveRDS(seurat_integrated, "processed_data/integrated_seurat.rds")
+```
+
+
+
+
+

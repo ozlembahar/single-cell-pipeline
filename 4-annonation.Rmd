@@ -1,0 +1,579 @@
+---
+title: "Dissecting individual NB clusters"
+author: "Bahar, Y."
+date: "4/26/2023"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Load libraries
+require(Seurat)
+require(tidyverse)
+require(RCurl)
+require(cowplot)
+require(miceadds)
+```
+
+```{r}
+seurat_integrated_labelled <- readRDS(file = "processed_data/4_seurat_integrated_labelled.rds")
+```
+
+```{r fig.height=6, fig.width=8}
+# Plot the UMAP
+ DimPlot(object = seurat_integrated_labelled, 
+        reduction = "umap", 
+        label = TRUE,
+        label.size = 6,
+        repel = TRUE)
+```
+
+```{r}
+# Check how many cells we have
+seurat_integrated_labelled
+```
+
+
+```{r}
+# Extract UMAP coordinates from the Seurat object
+umap_coords <- seurat_integrated_labelled@reductions$umap@cell.embeddings
+
+# Save UMAP coordinates to a CSV file
+write.csv(umap_coords, "UMAP_style/umap_coords_dseurat_integrated_labelled.csv", row.names = FALSE)
+```
+
+# Approach 2 chosen: SCT reintegration > Re-cluster 
+(following Integration tutorial)
+
+This approach was used for the rest of the analyses as it provided better
+results in the clustering of cells.
+```{r}
+#Get DEGs between NBs and all other
+nb.dges <- FindMarkers(seurat_integrated_labelled, ident.1 = "NB", ident.2 = NULL, only.pos = TRUE)
+# view results
+head(nb.dges)
+write.xlsx(nb.dges, file = "markers/nb.dges.up.xlsx", colNames = TRUE, rownames = TRUE)
+```
+
+## Plot dpn+ cells
+
+```{r}
+FeaturePlot(seurat_integrated_labelled, 
+            reduction = "umap", 
+            features = c("dpn"), 
+            min.cutoff = 'q10') +labs(title='NBs (dpn)')
+#ggsave("figures/interesting_vn_cluster_sep/dpn_pos_alltps.png", width=8, height=7)
+```
+
+```{r dpn+, include=FALSE, warning=FALSE}
+#Subseting
+DefaultAssay(seurat_integrated_labelled) <- "RNA"
+dpn.seurat<- subset(seurat_integrated_labelled, subset=dpn>1)
+#
+dpn.seurat_list2 <- SplitObject(dpn.seurat, split.by = "sample")
+dpn.seurat_list2 <- lapply(dpn.seurat_list2, SCTransform, vars.to.regress = "mitoRatio")
+features  <- SelectIntegrationFeatures(dpn.seurat_list2, nfeatures = 2000)
+dpn.seurat_list2 <- PrepSCTIntegration(dpn.seurat_list2, anchor.features = features)
+anchors <- FindIntegrationAnchors(dpn.seurat_list2, normalization.method = "SCT", anchor.features = features)
+dpn.seurat_combined2 <- IntegrateData(anchorset = anchors, normalization.method = "SCT", k.weight = 46)
+dpn.seurat_combined2 <- RunPCA(dpn.seurat_combined2) 
+dpn.seurat_combined2 <- RunUMAP(dpn.seurat_combined2, reduction = "pca", dims = 1:50)
+dpn.seurat_combined2 <- FindNeighbors(dpn.seurat_combined2, dims = 1:50)
+dpn.seurat_combined2 <- FindClusters(dpn.seurat_combined2, dims = 1:50, resolution = c(0.6, 0.8))
+#ElbowPlot(object = dpn.seurat_combined2,ndims = 40)
+#write_rds(dpn.seurat_combined2, file = "processed_data/dpn.seurat_combined2.rds")
+```
+
+```{r}
+# Check how many cells left after selecting dpn expressing cells
+#dpn.seurat_combined2 <-  readRDS(file = "processed_data/dpn.seurat_combined2.rds")
+dpn.seurat_combined2
+```
+
+```{r fig.height=6, fig.width=8}
+# Assign identity of clusters
+Idents(object = dpn.seurat_combined2) <- "integrated_snn_res.0.8"
+
+# Plot the UMAP
+DimPlot(dpn.seurat_combined2,
+        reduction = "umap",
+        label = TRUE,
+        label.size = 4,
+        repel=TRUE)
+
+#ggsave("figures/interesting_vn_cluster_sep/dpn_subclusters.png", width=8, height=7)
+```
+
+```{r}
+FeaturePlot(dpn.seurat_combined2, 
+            reduction = "umap", 
+            features = "fne", 
+            min.cutoff = 'q10') +
+            ggtitle("Neuron (fne)")+
+            theme_void()+
+            theme(plot.title = element_text(hjust = 0.5, vjust = 1, size=20, face="bold"))
+#ggsave("/Figures/Step2_fne.png", width=6, height=5, dpi=400)
+
+FeaturePlot(dpn.seurat_combined2, 
+            reduction = "umap", 
+            features = "tap", 
+            min.cutoff = 'q10') +
+            ggtitle("GMCs (tap)")+
+            theme_void()+
+            theme(plot.title = element_text(hjust = 0.5, vjust = 1, size=20, face="bold"))
+#ggsave("/Figures/Step2_tap.png", width=6, height=5, dpi=400)
+```
+
+```{r}
+#Extract top markers to filter out populations of cells other than NBs
+dpn.seurat_combined2.markers = FindAllMarkers(dpn.seurat_combined2, 
+                                              only.pos = TRUE, 
+                                              min.pct = 0.25, 
+                                              logfc.threshold = 0.25)
+
+#Extract top50 markers
+# #top50_dpn.pos <- dpn.seurat_combined2.markers %>% 
+#   mutate(avg_fc = avg_log2FC) %>% 
+#   group_by(cluster) %>% 
+#   top_n(n = 50, 
+#   wt = avg_fc)
+```
+#Annotate dpn+ clusters
+```{r fig.height=6, fig.width=8}
+dpn.seurat_combined2_annotated<- RenameIdents(object =dpn.seurat_combined2,
+"12"="Neuron",
+"15" ="Newborn neuron",
+"3" = "Newborn neuron",
+"0" = "GMC",
+"1" = "VNC",
+"2" = "VNC",
+"4" = "VNC",
+"5" = "VNC",
+"6"="VNC",
+"7"="VNC/Brain primordium",
+"8" = "VNC/Mesoderm primordium",
+"9"= "VNC",
+"10"= "VNC/Brain primordium",
+"11"="VNC/Brain primordium",
+"13"= "VNC",
+"14"="VNC",
+"16" = "NGB/GB",
+"17" = "VNC",
+"18"="VNC",
+"19"= "Unknown",
+"20"= "Unknown")
+
+# Plot the UMAP
+DimPlot(object = dpn.seurat_combined2_annotated, 
+        reduction = "umap", 
+        label = TRUE,
+        label.size = 6,
+        repel = TRUE)+
+        theme_void()+
+        theme(legend.position = "none")
+
+
+
+#ggsave("/Figures/step2.png", width=6, height=5, dpi=400)
+```
+
+```{r}
+# Generate the heatmap for step2
+dpn.seurat_combined2_annotated_markers = FindAllMarkers(dpn.seurat_combined2_annotated, 
+                                              only.pos = TRUE, 
+                                              min.pct = 0.25, 
+                                              logfc.threshold = 0.25)
+dpn.seurat_combined2_annotated_markers %>%
+    group_by(cluster) %>%
+    top_n(n = 10, wt = avg_log2FC) -> top10
+
+
+DoHeatmap(dpn.seurat_combined2_annotated, features = top10$gene)
+  
+ggsave("/Figures/heatmap_step2.png", height= 10, width=10, dpi=400)
+```
+
+```{r}
+# Extract UMAP coordinates from the Seurat object
+umap_coords <- dpn.seurat_combined2_annotated@reductions$umap@cell.embeddings
+
+# Save UMAP coordinates to a CSV file
+write.csv(umap_coords, "UMAP_style/umap_coords_dpn.seurat_combined2_annotated.csv", row.names = FALSE)
+```
+
+#Explore the clusters of dpn+ cells
+```{r}
+require(dplyr)
+# Retrieve the top 5 marker genes per cluster
+# Use whichever genes have the highest values under the AVG_LOG column
+top5 <- dpn.seurat_combined2.markers %>% group_by(cluster) %>%
+  dplyr::slice_max(get(grep("^avg_log", colnames(dpn.seurat_combined2.markers), value = TRUE)),
+                   n = 5)
+# Create the dot plot
+Seurat::DotPlot(dpn.seurat_combined2_annotated, features = unique(top5$gene)) +
+  ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 90, vjust = 1,
+                                            size = 12, hjust = 1)) +
+  Seurat::NoLegend()
+
+#ggsave("figures/step2_dpn_poss_clusters.svg", width=20, height=10)
+# Create the heatmap
+Seurat::DoHeatmap(dpn.seurat_combined2_annotated, features = unique(top5$gene)) +
+  Seurat::NoLegend() +
+  ggplot2::theme(axis.text.y = ggplot2::element_text(size = 8))
+```
+
+
+Note: Some of the dpn positive cells, show a variety of different cell type characteristics. This might be indication of they started to specialize. These more specialized cells should be filtered out from the data.
+```{r}
+#cluster 12: fne is a neuron marker
+FeaturePlot(dpn.seurat_combined2, 
+            reduction = "umap", 
+            features = "fne", 
+            min.cutoff = 'q10') +
+            ggtitle("Neuron (fne)")+
+            theme_void()+
+            theme(plot.title = element_text(hjust = 0.5, vjust = 1, size=20, face="bold"))
+ggsave("/Figures/Step2_fne.png", width=6, height=5, dpi=400)
+#cluster3: E(spl)m4-BFM is a neural progenitor marker
+FeaturePlot(dpn.seurat_combined2, 
+            reduction = "umap", 
+            features = "E(spl)m4-BFM", 
+            min.cutoff = 'q10') +
+            ggtitle("Newborn neuron (E(spl)mγ-HLH)")+
+            theme_void()+
+            theme(plot.title = element_text(hjust = 0.5, vjust = 1, size=20, face="bold"))
+FeaturePlot(dpn.seurat_combined2, 
+            reduction = "umap", 
+            features = "gcm", 
+            min.cutoff = 'q10') +
+            ggtitle("NGB/GB(gcm)")+
+            theme_void()+
+            theme(plot.title = element_text(hjust = 0.5, vjust = 1, size=20, face="bold"))
+FeaturePlot(dpn.seurat_combined2, 
+            reduction = "umap", 
+            features = "Traf1", 
+            min.cutoff = 'q10') +
+            ggtitle("GMC (Traf1)")+
+            theme_void()+
+            theme(plot.title = element_text(hjust = 0.5, vjust = 1, size=20, face="bold"))
+FeaturePlot(dpn.seurat_combined2, 
+            reduction = "umap", 
+            features = "sna", 
+            min.cutoff = 'q10') +
+            ggtitle("VNC(sna)")+
+            theme_void()+
+            theme(plot.title = element_text(hjust = 0.5, vjust = 1, size=20, face="bold"))
+ggsave("/Figures/Step2_sna.png", width=6, height=5, dpi=400)
+```
+
+## Get the clusters expressing domain markers 
+
+```{r, warning=FALSE ,include=FALSE}
+
+DefaultAssay(dpn.seurat_combined2) <- "RNA"
+#subset VNC populations
+dpn.vnc.domain<- subset(dpn.seurat_combined2, idents=c("1", "2", "4", "5", "6", "7", "8","9","10","11","13","14","16", "17", "18"))
+
+dpn.vnc.domain_list <- SplitObject(dpn.vnc.domain, split.by = "sample")
+dpn.vnc.domain_list <- lapply(dpn.vnc.domain_list, SCTransform, vars.to.regress = "mitoRatio")
+features  <- SelectIntegrationFeatures(dpn.vnc.domain_list, nfeatures = 2000)
+dpn.vnc.domain_list <- PrepSCTIntegration(dpn.vnc.domain_list, anchor.features = features)
+anchors <- FindIntegrationAnchors(dpn.vnc.domain_list, normalization.method = "SCT", anchor.features = features)
+dpn.vnc.domain_list<- IntegrateData(anchorset = anchors, normalization.method = "SCT", k.weight = 46)
+dpn.vnc.domain_list <- RunPCA(dpn.vnc.domain_list) 
+dpn.vnc.domain_list <- RunUMAP(dpn.vnc.domain_list, reduction = "pca", dims = 1:20)
+dpn.vnc.domain_list <- FindNeighbors(dpn.vnc.domain_list, dims = 1:20)
+dpn.vnc.domain_list <- FindClusters(dpn.vnc.domain_list, dims = 1:20, resolution = c(0.6, 0.8))
+ElbowPlot(object = dpn.vnc.domain_list, ndims = 40)
+```
+
+```{r}
+# Check how many cells left and save the .R object
+#dpn.vnc.domain_list
+#write_rds(dpn.vnc.domain_list, file = "processed_data/dpn.vnc.domain_list.rds")
+```
+
+```{r}
+# Plot the UMAP
+# Assign the identity of clusters
+
+Idents(object = dpn.vnc.domain_list) <- "integrated_snn_res.0.8"
+
+# Plot the UMAP
+DimPlot(dpn.vnc.domain_list,
+        reduction = "umap",
+        label = TRUE,
+        label.size = 6,
+        repel=TRUE)
+
+#ggsave("figures/interesting_vn_cluster_sep/dpn_vnc_subcluster.png", width=8, height=7)
+```
+
+```{r}
+# Extract UMAP coordinates from the Seurat object
+umap_coords <- dpn.vnc.domain_list@reductions$umap@cell.embeddings
+
+# Save UMAP coordinates to a CSV file
+write.csv(umap_coords, "UMAP_style/umap_coordsdpn.vnc.domain_list.csv", row.names = FALSE)
+```
+
+#Dissect NBs from midline, brain and ventral neuroectoderm.
+
+```{r}
+#Extract top 50 markers
+#2nd filter: Identified neuroectoderm drived NBs and filter out midline and brain drived NBs
+dpn.vnc.domain_list.markers = FindAllMarkers(dpn.vnc.domain_list, 
+                                              only.pos = TRUE, 
+                                              min.pct = 0.25, 
+                                              logfc.threshold = 0.25)
+
+#Extract top 50 markers
+top50.nenbs <- dpn.vnc.domain_list.markers %>% 
+  mutate(avg_fc = avg_log2FC) %>% 
+  group_by(cluster) %>% 
+  top_n(n = 50, 
+        wt = avg_fc)
+
+# Visualize top 10 markers per cluster
+View(top50.nenbs)
+#Save the top 50
+#write.xlsx(top50.nenbs, file = "markers/3-top50.nb.dissected.xlsx", colNames = TRUE, rownames = TRUE)
+
+```
+
+```{r fig.height=6, fig.width=8}
+dpn.vnc.domain_list_annotated<- RenameIdents(object =dpn.vnc.domain_list,
+"0"="NB",
+"1" ="NB",
+"2" = "NB",
+"3" = "NB",
+"4" = "NB",
+"5" = "MG",
+"6" = "NB",
+"7" = "Brain/Midline NB",
+"8"="Brain NB",
+"9"="NB",
+"10" = "NB",
+"11"= "Brain/Midline NB",
+"12"= "NB",
+"13"="NB",
+"14"= "NB",
+"14"= "NB",
+"15"= "NB")
+
+
+# Plot the UMAP
+# DimPlot(object = dpn.vnc.domain_list_annotated, 
+#         reduction = "umap", 
+#         label = TRUE,
+#         label.size = 6,
+#         repel = TRUE)+
+#         theme_void()+
+#         theme(legend.position = "none")
+
+#ggsave("/Figures/step3_labelled.png", width=6, height=5, dpi = 400)
+```
+
+
+```{r}
+#Generate the heatmap for step 3
+dpn.vnc.domain_list_annotated_markers = FindAllMarkers(dpn.vnc.domain_list_annotated, 
+                                              only.pos = TRUE, 
+                                              min.pct = 0.25, 
+                                              logfc.threshold = 0.25)
+dpn.vnc.domain_list_annotated_markers %>%
+    group_by(cluster) %>%
+    top_n(n = 10, wt = avg_log2FC) -> top10
+
+
+DoHeatmap(dpn.vnc.domain_list_annotated, features = top10$gene)
+  
+ggsave("/Figures/heatmap_step3.png", height= 10, width=8, dpi=400)
+```
+
+
+```{r MidlineBrainNBs}
+
+FeaturePlot(dpn.vnc.domain_list_annotated, 
+            reduction = "umap", 
+            features = "cas", 
+            min.cutoff = 'q10') +
+            ggtitle("Brain+Midline NB (cas)")+
+            theme_void()+
+            theme(plot.title = element_text(hjust = 0.5, vjust = 1, size=20, face="bold"))
+ggsave("/step3_BrainMidlineNB.png", width=6, height=5, dpi = 400)
+
+FeaturePlot(dpn.vnc.domain_list_annotated, 
+            reduction = "umap", 
+            features = "toy", 
+            min.cutoff = 'q10') +
+            ggtitle("Brain NB (toy)")+
+            theme_void()+
+            theme(plot.title = element_text(hjust = 0.5, vjust = 1, size=20, face="bold"))
+#plot tll expression and save
+FeaturePlot(dpn.vnc.domain_list_annotated, 
+            reduction = "umap", 
+            features = "tll", 
+            min.cutoff = 'q10') +
+            ggtitle("Brain NB (tll)")+
+            theme_void()+
+            theme(plot.title = element_text(hjust = 0.5, vjust = 1, size=20, face="bold"))
+ggsave("/Figures/step3_BrainNB_tll.png", width=6, height=5, dpi = 400)
+#plot oc expression
+FeaturePlot(dpn.vnc.domain_list_annotated, 
+            reduction = "umap", 
+            features = "oc", 
+            min.cutoff = 'q10') +
+            ggtitle("Brain/Midline NB (oc)")+
+            theme_void()+
+            theme(plot.title = element_text(hjust = 0.5, vjust = 1, size=20, face="bold"))
+
+ggsave("/Users/Figures/step3_BrainNB.png", width=6, height=5, dpi = 400)
+
+#Notes:
+#spi is expressed ubiquitously and other midline specific markers are not marking         #any clusters. So my strategy to identify midline NBs as follows:
+#vvl and cas are markers for both midline and brain. Since we identified brain          #NBs with brain specific marker toy, the remaining cluster marked via vvl and       
+#cas labels midline. (Only early time points of development)
+#ggsave("figures/midline.jpeg", width=15, height=10)
+```
+
+# Take only the VNC NB clusters as well as Midline Glia (MG)
+
+```{r, warning=FALSE ,include=FALSE}
+# Subcluster after removing brain/midline NBs
+
+DefaultAssay(dpn.vnc.domain_list) <- "RNA"
+#subset AP neuroblast populations
+dpn.nb.clusters<- subset(dpn.vnc.domain_list, idents = c("0", "1", "2", "3", "4", "5", "6", "9", "10", "12", "13", "14", "15"))
+
+dpn.nb.clusters_list <- SplitObject(dpn.nb.clusters, split.by = "sample")
+dpn.nb.clusters_list <- lapply(dpn.nb.clusters_list, SCTransform, vars.to.regress = "mitoRatio")
+features  <- SelectIntegrationFeatures(dpn.nb.clusters_list, nfeatures = 2000)
+dpn.nb.clusters_list <- PrepSCTIntegration(dpn.nb.clusters_list, anchor.features = features)
+anchors <- FindIntegrationAnchors(dpn.nb.clusters_list, normalization.method = "SCT", anchor.features = features)
+dpn.nb.clusters_list<- IntegrateData(anchorset = anchors, normalization.method = "SCT",k.weight = 46)
+dpn.nb.clusters_list <- RunPCA(dpn.nb.clusters_list) 
+dpn.nb.clusters_list <- RunUMAP(dpn.nb.clusters_list, reduction = "pca", dims = 1:15)
+dpn.nb.clusters_list <- FindNeighbors(dpn.nb.clusters_list, dims = 1:20)
+dpn.nb.clusters_list <- FindClusters(dpn.nb.clusters_list, dims = 1:20, resolution = c(0.6, 0.8, 1))
+ElbowPlot(object = dpn.nb.clusters_list, ndims = 40)
+```
+
+```{r fig.height=6, fig.width=8}
+# Plot the UMAP
+# Assign identity of clusters
+Idents(object = dpn.nb.clusters_list) <- "integrated_snn_res.0.8"
+
+# Plot the UMAP
+DimPlot(dpn.nb.clusters_list,
+        reduction = "umap",
+        label = TRUE,
+        label.size = 6,
+        repel=TRUE)
+
+#ggsave("figures/interesting_vn_cluster_sep/dpn.nb.clusters_list.png", width=8, height=7)
+```
+
+```{r fig.height=6, fig.width=8}
+DotPlot(object = dpn.nb.clusters_list, 
+                         features = c("Dr","ind","vnd", "en","wg","gsb", "svp", "ac","hkb", "slp1","lsc","odd", "mirr", "CG42342" ,"retn","pnt", "htl", "gcm"), 
+                         assay="RNA")+
+       theme(axis.text.x = element_text(angle = 45))
+#ggsave("figures/interesting_vn_cluster_sep/dotplot_dpn.nb.clusters_list.png", width=8, height=7)
+```
+
+```{r}
+#Check the expression of Fer3 or Fer1 (enriched in the data)
+FeaturePlot(dpn.nb.clusters_list, 
+            reduction ="umap", 
+            features = "Fer1", 
+            label = TRUE,
+            min.cutoff = 'q10') +labs(title='Fer1')
+#ggsave("figures/fixed-result-apr/3-nb.clu/Fer1.png", width=9, height=7)
+```
+
+```{r}
+#Save before labeling
+#write_rds(dpn.nb.clusters_list, file = "processed_data/dpn.nb.clusters_list.rds")
+dpn.nb.clusters_list <- readRDS(file = "processed_data/dpn.nb.clusters_list.rds")
+```
+
+```{r, fig.height=7, fig.width=10}
+dpn.nb.clusters_list<- RenameIdents(object =dpn.nb.clusters_list,
+"5" = "7-4",
+"4" = "7-4",
+"8" = "7-1",
+"13" = "5-6",
+"0" = "5-3",
+"14" = "5-2",
+"6"="6-2",
+"12"="5-4",
+"11" = "4-2",
+"15"= "3-5",
+"9"= "3-2",
+"10"="2-5",
+"7"="2-4",
+"1"= "1-2",
+"3"="1-1",
+"2" ="MG")
+
+# Plot the UMAP
+DimPlot(object = dpn.nb.clusters_list, 
+        reduction = "umap", 
+        label = TRUE,
+        label.size = 6,
+        repel = TRUE)+
+        theme_void()+
+        theme(legend.position = "none")
+
+#ggsave("/Figures/step4_NBs.png", width=6, height=5, dpi=400)
+```
+
+```{r}
+# Extract UMAP coordinates from the Seurat object
+umap_coords <- dpn.nb.clusters_list@reductions$umap@cell.embeddings
+
+# Save UMAP coordinates to a CSV file
+write.csv(umap_coords, "UMAP_style/umap_coords_dpn.nb.clusters_list.csv", row.names = FALSE)
+```
+
+
+```{r fig.height=6, fig.width=8}
+DotPlot(object = dpn.nb.clusters_list, features = c("Dr","ind","vnd", "en","wg","gsb", "svp", "ac","hkb","odd", "mirr", "CG42342" ,"retn","pnt", "htl", "run", "gcm", "sim","eg", "Poxn"), 
+                           assay="RNA")+
+       theme(axis.text.x = element_text(angle = 45))
+#ggsave("Figures/dotplot-nbs.png", width=9 , height = 6)
+```
+
+```{r}
+# The heatmap for given cells and features
+dpn.nb.clusters_list_markers = FindAllMarkers(dpn.nb.clusters_list, 
+                                              only.pos = TRUE, 
+                                              min.pct = 0.25, 
+                                              logfc.threshold = 0.25)
+dpn.nb.clusters_list_markers %>%
+    group_by(cluster) %>%
+    top_n(n = 10, wt = avg_log2FC) -> top10
+
+
+#DoHeatmap(dpn.nb.clusters_list, features = top10$gene)+
+  theme(
+    axis.text.x = element_text(size = 25), 
+    axis.text.y = element_text(size = 10),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 14)
+  )
+#ggsave("/Figures/heatmap_nbs.png", height=18, width=12, dpi=600)
+```
+
+```{r}
+# Save the final R object
+write_rds(dpn.nb.clusters_list, file = ("processed_data/dpn.nb.clusters_list.rds"))
+#Create and save a text file with sessionInfo
+#sink("sessionInfo_scrnaseq_Apr25.txt")
+#sessionInfo()
+#sink()
+```

@@ -1,0 +1,269 @@
+---
+title: "Assessing the quality metrics"
+output: pdf_document
+author: "Özlem Bahar"
+date: "1/17/2022"
+---
+
+
+```{r packages, warning=FALSE, message = FALSE, include=FALSE}
+# load the packages
+require(miceadds)
+require(Seurat)
+require(SeuratObject)
+require(ggplot2)
+require(patchwork)
+require(sctransform)
+require(tidyverse)
+require(Matrix)
+require(scales)
+require(cowplot)
+require(RCurl)
+require(readr)
+require(dplyr)
+```
+
+```{r setup, include=FALSE}
+# load the data
+load.Rdata(file="processed_data/merged_seurat.RData", "merged_seurat")
+#Create metadata dataframe
+metadata <- merged_seurat@meta.data
+```
+
+## The quality control metrics
+
+Assess the quality metrics below to identify the low quality cells to remove from the data.
+
+* Cell counts
+* UMI counts per cell
+* Genes detected per cell
+* UMIs vs. genes detected
+* The ratio of mitochondrial mRNA count
+* Novelty
+
+```{r NCells, echo=FALSE}
+# Visualize the number of cell counts per sample
+metadata %>% 
+  ggplot(aes(x=sample, fill=sample)) + 
+  geom_bar() +
+    geom_text(aes(label = ..count..),stat = "count",vjust = 1.5,colour = "white")+
+
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  theme(plot.title = element_text(hjust=0.5, face="bold")) +
+  ggtitle("Number of Cells")
+```
+
+## Determine the UMI counts (transcripts) per cell
+
+The UMI count per cell should  be above 500. The UMI counts are between 500 and 1000 counts are the indication of that the cells should have been sequenced deeper.
+
+```{r trancript/cell}
+# Visualize the number UMIs/transcripts per cell
+metadata %>% 
+  	ggplot(aes(color=sample, x=nUMI, fill= sample)) + 
+  	geom_density(alpha = 0.2) + 
+  	scale_x_log10() + 
+  	theme_classic() +
+  	ylab("Cell density") +
+  	geom_vline(xintercept = 500)
+```
+
+## Determine the number of genes per cell
+
+The number of genes expected to be similar but a lower than UMIs.
+
+For high quality data, the proportional histogram should contain a single large peak that represents cells that were encapsulated. If there is a small shoulder to the left of the bigger peak or a bimodal distribution, this can be indicative of couple of things:  
+
+* Cells are distrupted.
+* There are biologically different types of cells (i.e. quiescent cell populations, less complex cells of interest), and/or one type is much smaller than the other (i.e. cells with high counts may be cells that are larger in size). 
+
+The gene detection in the range of 500-5000 is normal for inDrop analysis. 
+
+```{r}
+# The distribution of genes detected per cell via histogram
+metadata %>% 
+  	ggplot(aes(color=sample, x=nGene, fill= sample)) + 
+  	geom_density(alpha = 0.2) + 
+  	theme_classic() +
+  	scale_x_log10() + 
+  	geom_vline(xintercept = 300)
+
+# The distribution of genes detected per cell via boxplot
+metadata %>% 
+  	ggplot(aes(x=sample, y=log10(nGene), fill=sample)) + 
+  	geom_boxplot() + 
+  	theme_classic() +
+  	theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  	theme(plot.title = element_text(hjust=0.5, face="bold")) +
+  	ggtitle("Number of Cells vs Number of Genes")
+```
+
+## UMIs vs. the number of genes detected
+
+Evaluate the two metrics together: the number of UMIs and the number of genes detected per cell.The plot was colored by the fraction of mitochondrial reads. 
+
+```{r, genes_UMIs}
+# Visualize the correlation between genes detected and number of UMIs and                                         determine whether strong presence of cells with low numbers of genes/UMIs
+metadata %>%
+    ggplot(aes(x=nUMI, y=nGene, color=mitoRatio)) +
+    geom_point() +
+    scale_colour_gradient(low = "gray90", high = "black") +
+    stat_smooth(method=lm) +
+    scale_x_log10() +
+    scale_y_log10() +
+    theme_classic() +
+    geom_vline(xintercept = 500) +
+    geom_hline(yintercept = 500) +
+    facet_wrap(~sample)
+```
+
+## The ratio of mitochondrial count
+
+This metric is used to determine if there is a large amount of mitochondrial contamination from dead or dying cells.
+
+```{r, mito}
+# Visualize the distribution of mitochondrial gene expression detected per cell
+metadata %>% 
+  	ggplot(aes(color=sample, x=mitoRatio, fill=sample)) + 
+  	geom_density(alpha = 0.2) + 
+  	scale_x_log10() + 
+  	theme_classic() +
+  	geom_vline(xintercept = 0.25)
+```
+
+## Complexity of the RNA
+
+Determine the complexity (novelty) of the cells by calculating the novelty score. The novelty score is calculated by taking the ratio of the number of genes over nUMI. The novelty score is expected to be above 0.80 for good quality cells.
+
+```{r, genesperUMI}
+# Determine the overall complexity of the gene expression by visualizing the                                            genes detected per UMI
+metadata %>%
+  	ggplot(aes(x=log10GenesPerUMI, color = sample, fill=sample)) +
+  	geom_density(alpha = 0.2) +
+  	theme_classic() +
+  	geom_vline(xintercept = 0.8)
+```
+
+## Filtering
+
+# Cell-level filtering
+
+Now that we have visualized the various metrics, we can decide on the thresholds to apply which will result in the removal of low quality cells. Often the recommendations mentioned earlier are a rough guideline, and the specific experiment needs to inform the exact thresholds chosen. We will use the following thresholds:
+
+nUMI > 500 (This could be even 1000)
+nGene > 500
+log10GenesPerUMI > 0.8
+mitoRatio < 0.25
+
+```{r, vlnplot}
+#Check before filtering
+VlnPlot(merged_seurat, 
+        features = c("nUMI", "nGene", "mitoRatio"), 
+        ncol=3, 
+        group.by = "sample")
+```
+
+```{r, fig.width=8, fig.height=3}
+# FeatureScatter is typically used to visualize feature-feature relationships,                                          but can be used for anything calculated by the object, i.e. columns in object                                       metadata, PC scores etc.
+
+plot1 <- FeatureScatter(merged_seurat, 
+                        feature1 = "nUMI", 
+                        feature2 = "mitoRatio")
+plot2 <- FeatureScatter(merged_seurat, 
+                        feature1 = "nUMI", 
+                        feature2 = "nGene")
+plot1 + plot2
+```
+
+```{r}
+# Filter out low quality cells using selected thresholds 
+# As the distribution of QC covariates differ between samples, QC thresholds should be determined separately for each sample (Plasschaert et al (2018))
+
+filtered_seurat_tp1 <- subset(x = merged_seurat, subset=
+                                   sample == "TP1"&
+                                    mitoRatio < 0.25 & 
+                                    nGene < 2500 &
+                                    nGene > 500 &
+                                    nUMI > 500 &
+                                    log10GenesPerUMI > 0.8)
+
+filtered_seurat_tp2 <- subset(x = merged_seurat, subset=
+                                    sample == "TP2"&
+                                    mitoRatio < 0.25 &
+                                   nGene > 500 &
+                                     nUMI > 500 &
+                                     log10GenesPerUMI > 0.8)
+
+filtered_seurat_tp2.2 <- subset(x = merged_seurat, subset=
+                                   sample == "TP2.2"&
+                                    mitoRatio < 0.1 &
+                                    nGene < 4500 &
+                                    nGene > 500 &
+                                    nUMI > 500 &
+                                    log10GenesPerUMI > 0.8)
+
+filtered_seurat <- merge(x = filtered_seurat_tp1,
+                          y = c(filtered_seurat_tp2,
+                                filtered_seurat_tp2.2))
+
+```
+
+## Gene-level filtering
+
+Genes with zero counts dramatically reduce the average expression for a cell and therefore should be removed.
+
+```{r}
+# Identify genes with zero counts
+object = filtered_seurat
+counts <- GetAssayData(object = filtered_seurat, slot = "counts")
+
+# Output a logical matrix specifying for each gene on whether or not there are                                          more than zero counts per cell
+nonzero <- counts > 0
+```
+
+Keep the genes which are expressed in 10 or more cells and thereby remove the genes with zero counts in all cells.
+
+```{r}
+
+# returns TRUE if more than 10 TRUE values per gene
+keep_genes <- Matrix::rowSums(nonzero) >= 10
+
+# keep those expressed in more than 10 cells
+filtered_counts <- counts[keep_genes, ]
+```
+
+Generate a new Seurat object with the remaning cells for downstream analysis.
+
+```{r}
+# Reassign to filtered Seurat object
+filtered_seurat <- CreateSeuratObject(filtered_counts, 
+                                      meta.data = filtered_seurat@meta.data)
+```
+
+```{r}
+#Check the metrics after filtering
+VlnPlot(filtered_seurat, features = c("nUMI", "nGene", "mitoRatio"), ncol=3)
+```
+
+```{r}
+filtered_seurat@meta.data -> metadata
+```
+
+
+```{r}
+metadata %>% 
+  ggplot(aes(x=sample, fill=sample)) + 
+  geom_bar()+
+  geom_text(aes(label = ..count..),stat = "count",vjust = 1.5,colour = "white")+
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  theme(plot.title = element_text(hjust=0.5, face="bold")) +
+  ggtitle("Number of Cells")
+```
+
+
+```{r}
+# Save filtered object
+save(filtered_seurat, file="processed_data/filtered_seurat.RData")
+```

@@ -1,0 +1,325 @@
+---
+title: "Clustering the cells and marker identification"
+output: pdf_document
+author: "Bahar,Y."
+date: "4/26/2023"
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load libraries
+require(Seurat)
+require(tidyverse)
+require(RCurl)
+require(cowplot)
+require(miceadds)
+```
+
+
+```{r rdata}
+#load the .RDS object from the 2nd step 
+seurat_integrated <- readRDS(file="processed_data/integrated_seurat.rds")
+```
+
+
+## Cluster the cells based on top PCs 
+```{r pc.heatmap}
+# Explore heatmap of PCs
+DimHeatmap(seurat_integrated, 
+           dims = 1:15, 
+           cells = 500, 
+           balanced = TRUE)
+```
+
+Print out the top 10 (or more) positive and negative genes by PCA scores driving the PCs.
+
+```{r variable.genes}
+# Check the most variable genes driving PCs
+print(x = seurat_integrated[["pca"]], 
+      dims = 1:15, 
+      nfeatures = 20)
+```
+
+
+# Plot the elbow plot to visualize the standard deviation of each PC and to determine how many PCs to use for clustering (where the standard deviations begins to plateau)
+
+```{r}
+# Plot the elbow plot
+ElbowPlot(object = seurat_integrated, 
+          ndims = 50)
+```
+## Cluster the cells
+
+```{r, k.near, include=FALSE}
+# Determine the K-nearest neighbor graph
+seurat_integrated <- FindNeighbors(object = seurat_integrated, 
+                                dims = 1:50)
+                                
+# Determine the clusters for various resolutions
+# separate column for metadata in seurat_integrated@meta.data
+seurat_integrated <- FindClusters(object = seurat_integrated,
+                               resolution = c(0.6, 0.8))
+```
+
+
+```{r}
+# Visualize the different resolutions
+seurat_integrated@meta.data %>% 
+        View()
+```
+
+```{r, fig.height=10, fig.width=10}
+# Assign identity of clusters
+Idents(object = seurat_integrated) <- "integrated_snn_res.0.6"
+
+# Plot the UMAP
+DimPlot(seurat_integrated,
+        reduction = "umap",
+        label = TRUE,
+        label.size = 6)
+```
+
+## Check the quality control metrics
+
+```{r}
+# Create sample column
+seurat_integrated@meta.data$orig.ident[which(str_detect(seurat_integrated@meta.data$cells, "^TP1_"))] <- "tp1"
+#seurat_integrated@meta.data$orig.ident[which(str_detect(seurat_integrated@meta.data$cells, "^TP2_"))] <- "tp2"
+seurat_integrated@meta.data$orig.ident[which(str_detect(seurat_integrated@meta.data$cells, "^TP2.2_"))] <- "tp2.2"
+```
+
+
+```{r}
+# Determine the number of cells per cluster per sample
+n_cells <- FetchData(seurat_integrated, 
+                     vars = c("ident", "orig.ident")) %>%
+        dplyr::count(ident, orig.ident) %>%
+        tidyr::spread(ident, n)
+
+View(n_cells)
+```
+
+Check the nummber of the cells per cluster for each sample using the UMAP:
+
+```{r}
+# UMAP of cells in each cluster by sample
+DimPlot(seurat_integrated, 
+        label = TRUE, 
+        split.by = "sample")  + NoLegend()
+```
+
+# Check for segregation of clusters by S-phase and G2M-phase markers
+
+```{r}
+# Plot the metrics and check if they vary the clusters
+metrics <-  c("nCount_RNA", "nFeature_RNA", "mitoRatio")
+
+FeaturePlot(seurat_integrated, 
+            reduction = "umap", 
+            features = metrics,
+            pt.size = 0.4, 
+            sort.cell = TRUE,
+            min.cutoff = 'q10',
+            label = TRUE)
+```
+
+## Which PCs do drive the different clusters?
+
+PCs should separate the clusters.
+```{r}
+# Get the UMAP info
+columns <- c(paste0("PC_", 1:50),
+            "ident",
+            "UMAP_1", "UMAP_2")
+
+# Extract the data
+pc_data <- FetchData(seurat_integrated, 
+                     vars = columns)
+```
+
+
+```{r}
+# Extract the UMAP coordinates for the first 10 cells
+seurat_integrated@reductions$umap@cell.embeddings[1:10, 1:2]
+```
+
+```{r}
+# Add the cluster name
+umap_label <- FetchData(seurat_integrated, 
+                        vars = c("ident", "UMAP_1", "UMAP_2"))  %>%
+  group_by(ident) %>%
+  summarise(x=mean(UMAP_1), y=mean(UMAP_2))
+  
+#Plot the first 16 PCs
+map(paste0("PC_", 1:15), function(pc){
+        ggplot(pc_data, 
+               aes(UMAP_1, UMAP_2)) +
+                geom_point(aes_string(color=pc), 
+                           alpha = 0.7) +
+                scale_color_gradient(guide = FALSE, 
+                                     low = "grey90", 
+                                     high = "blue")  +
+                geom_text(data=umap_label, 
+                          aes(label=ident, x, y)) +
+                ggtitle(pc)
+}) %>% 
+        plot_grid(plotlist = .)
+```
+
+
+```{r}
+# Check the PCA results 
+print(seurat_integrated[["pca"]],  dims = 1:15, nfeatures = 5)
+```
+
+```{r}
+# Select the RNA counts slot to be the default assay
+DefaultAssay(seurat_integrated) <- "RNA"
+
+# Normalize RNA data for visualization purposes
+seurat_integrated <- NormalizeData(seurat_integrated, verbose = FALSE)
+```
+
+## Marker identification
+
+```{r, conserved.markers}
+# require(multtest)
+# require(metap)
+FindConservedMarkers(seurat_integrated,
+                     ident.1 = 0,
+                     grouping.var = "sample",
+                     only.pos = TRUE,
+		                 min.diff.pct = 0.25,
+                     min.pct = 0.25,
+		                 logfc.threshold = 0.25)
+```
+
+```{r}
+cluster0_conserved_markers <- FindConservedMarkers(seurat_integrated,
+                              ident.1 = 0,
+                     	        grouping.var = "sample",
+                              only.pos = TRUE,
+		                          logfc.threshold = 0.25)
+```
+
+```{r}
+cluster12_conserved_markers <- FindConservedMarkers(seurat_integrated,
+                              ident.1 = 12,
+                     	        grouping.var = "sample",
+                              only.pos = TRUE,
+		                          logfc.threshold = 0.25)
+```
+
+## Adding the gene annonation
+
+```{r}
+#Get the gene annotation information from annotation.csv
+annotations <- read.csv(file="processed_data/annotations.csv")
+```
+
+
+```{r}
+# Merge the gene annonation info. 
+cluster0_ann_markers <- cluster0_conserved_markers %>% 
+                rownames_to_column(var="gene") %>% 
+                left_join(y = unique(annotations[, c("gene_name", "description")]),
+                          by = c("gene" = "gene_name"))
+
+View(cluster0_ann_markers)
+```
+
+
+```{r, markers.by.cluster}
+# A function to identify markers for any given cluster
+get_conserved <- function(cluster){
+  FindConservedMarkers(seurat_integrated,
+                       ident.1 = cluster,
+                       grouping.var = "sample",
+                       only.pos = TRUE) %>%
+    rownames_to_column(var = "gene") %>%
+    left_join(y = unique(annotations[, c("gene_name", "description")]),
+               by = c("gene" = "gene_name")) %>%
+    cbind(cluster_id = cluster, .)
+  }
+```
+
+```{r}
+# Iterate function across desired clusters
+conserved_markers <- map_dfr(c(0:23), get_conserved)
+```
+## Evaluating marker genes
+
+Check for top 50 markers to identify the clusters
+```{r}
+# Extract top 50 markers per cluster
+top50_merged <- conserved_markers %>% 
+  mutate(avg_fc = (TP1_avg_log2FC + TP2.2_avg_log2FC) /2) %>% 
+  group_by(cluster_id) %>% 
+  top_n(n = 50, 
+        wt = avg_fc)
+
+# Visualize top markers per cluster
+#View(top50)
+library(openxlsx)
+#write.xlsx(top50_merged, file = "markers/top50_merged.xlsx", colNames = TRUE, rownames = TRUE)
+```
+
+```{r}
+# Rename all identities
+seurat_integrated_labelled <- RenameIdents(object = seurat_integrated, 
+                               "0" = "VNC primordium",
+                               "1" = "Newborn neuron",
+                               "2" = "NB",
+                               "3" = "NB",
+                               "4" = "GMC",
+                               "5" = "NB",
+                               "6" = "NB",
+                               "7" = "Neural precursor",
+                               "8" = "NB",
+                               "9" = "NB",
+                               "10" = "VNC primordium",
+                               "11" = "NB",
+                               "12"= "Glia",
+                               "15" = "Glia precursor",
+                               "13" = "Unknown",
+                               "14" = "Unknown",
+                               "16" = "Midline primordium",
+                               "17" ="Neural precursor", 
+                               "18" = "NB",
+                               "19" ="VNC primordium",
+                               "20"="Sensory complex primordium",
+                               "21" ="Unknown",
+                               "22"= "Neural precursor",
+                               "23" ="Unknown")
+
+# Plot the UMAP
+DimPlot(object = seurat_integrated_labelled,
+        reduction = "umap", 
+        label = TRUE,
+        label.size = 6,
+        repel = TRUE)+
+        theme_void()+
+        theme(legend.position = "none")
+
+#ggsave("Figures/step1.png", width=6, height=5, dpi=400)
+```
+
+```{r}
+n_cells_clusters <- FetchData(seurat_integrated_labelled, 
+                     vars = c("ident", "orig.ident")) %>%
+        dplyr::count(ident, orig.ident) %>%
+        tidyr::spread(ident, n)
+```
+
+```{r}
+# Save the final R object
+write_rds(seurat_integrated,
+          file = "processed_data/4_seurat_integrated_labelled.rds")
+
+# Create and save a text file with sessionInfo
+# sink("sessionInfo_scrnaseq_March23.txt")
+# sessionInfo()
+# sink()
+```
